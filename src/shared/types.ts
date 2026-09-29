@@ -35,6 +35,8 @@ export interface SessionInfo {
   pr?: PrInfo;
   docPath: string;
   port: number;
+  worktree?: boolean;
+  contentRepo: string; // repository containing the immutable base/head objects
 }
 
 /** A highlighted token. `l`/`d` are the colors for the light/dark theme. */

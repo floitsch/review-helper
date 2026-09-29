@@ -46,8 +46,10 @@ function createServer(session: Session): McpServer {
         `base: ${i.base} = ${i.baseSha}`,
         `head: ${i.head} = ${i.headSha}`,
         `review document: ${i.docPath}`,
+        `content repository (for git show): ${i.contentRepo}`,
+        ...(i.worktree ? ['mode: working tree; base/head are snapshot trees, not commits'] : []),
         `last reviewed head: ${session.state.lastReviewedSha ?? '(never)'}`,
-        i.pr ? `pull request: #${i.pr.number} "${i.pr.title}" by ${i.pr.author} (${i.pr.url})\n  ${i.pr.headRefName} -> ${i.pr.baseRefName}` : 'pull request: none (local branch review)',
+        i.pr ? `pull request: #${i.pr.number} "${i.pr.title}" by ${i.pr.author} (${i.pr.url})\n  ${i.pr.headRefName} -> ${i.pr.baseRefName}` : 'pull request: none (local review)',
         `commits (oldest first):`,
         ...i.commits.map((c) => `  ${c.shortSha} ${c.subject} (${c.author})`),
       ];

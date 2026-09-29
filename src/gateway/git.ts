@@ -7,9 +7,9 @@ import type { CommitInfo } from '../shared/types.ts';
 
 const MAX_BUFFER = 256 * 1024 * 1024;
 
-export function git(cwd: string, args: string[], opts: { binary?: boolean } = {}): Promise<string | Buffer> {
+export function git(cwd: string, args: string[], opts: { binary?: boolean; env?: NodeJS.ProcessEnv } = {}): Promise<string | Buffer> {
   return new Promise((resolve, reject) => {
-    execFile('git', args, { cwd, maxBuffer: MAX_BUFFER, encoding: opts.binary ? 'buffer' : 'utf8' }, (err, stdout, stderr) => {
+    execFile('git', args, { cwd, env: { ...process.env, ...opts.env }, maxBuffer: MAX_BUFFER, encoding: opts.binary ? 'buffer' : 'utf8' }, (err, stdout, stderr) => {
       if (err) {
         reject(new Error(`git ${args.join(' ')} failed: ${String(stderr).trim() || err.message}`));
       } else {
@@ -19,8 +19,8 @@ export function git(cwd: string, args: string[], opts: { binary?: boolean } = {}
   });
 }
 
-export async function gitText(cwd: string, args: string[]): Promise<string> {
-  return (await git(cwd, args)) as string;
+export async function gitText(cwd: string, args: string[], opts: { env?: NodeJS.ProcessEnv } = {}): Promise<string> {
+  return (await git(cwd, args, opts)) as string;
 }
 
 export async function revParse(cwd: string, rev: string): Promise<string> {

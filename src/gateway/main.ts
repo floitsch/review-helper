@@ -17,6 +17,7 @@ interface Args {
   base?: string;
   head?: string;
   pr?: number;
+  worktree?: boolean;
   port: number;
 }
 
@@ -28,6 +29,7 @@ Options:
   --pr <number>   GitHub pull request number (uses gh for metadata and comments)
   --base <ref>    Base revision (default: the PR base, or origin/main)
   --head <ref>    Head revision (default: the PR branch if checked out, or HEAD)
+  --worktree      Review staged, unstaged and untracked files against HEAD (or --base)
   --port <port>   Port to listen on (default: 7777)
 `);
   process.exit(1);
@@ -45,6 +47,7 @@ function parseArgs(argv: string[]): Args {
     else if (a === '--pr') args.pr = Number(next());
     else if (a === '--base') args.base = next();
     else if (a === '--head') args.head = next();
+    else if (a === '--worktree') args.worktree = true;
     else if (a === '--port') args.port = Number(next());
     else if (a === '-h' || a === '--help') usage();
     else if (/^\d+$/.test(a)) args.pr = Number(a);
@@ -78,7 +81,7 @@ async function readJson(req: http.IncomingMessage): Promise<any> {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const session = await Session.create({ repo: args.repo, base: args.base, head: args.head, pr: args.pr, port: args.port });
+  const session = await Session.create(args);
   const webDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'dist', 'web');
 
   const server = http.createServer(async (req, res) => {
@@ -170,7 +173,7 @@ async function handleApi(session: Session, url: URL, req: http.IncomingMessage, 
       return json(res, 200, f);
     }
     case 'GET /api/files':
-      return json(res, 200, await listFiles(session.repo, session.info.headSha));
+      return json(res, 200, await listFiles(session.contentRepo, session.info.headSha));
     case 'GET /api/pr':
       return json(res, 200, session.conversation);
     case 'POST /api/pr/refresh':

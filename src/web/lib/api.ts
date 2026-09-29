@@ -66,10 +66,11 @@ async function handle(msg: ServerMessage) {
       app.session = msg.session;
       const headChanged = lastHead !== null && lastHead !== msg.session.headSha;
       lastHead = msg.session.headSha;
+      if (headChanged) app.files = null;
       if (!app.range || headChanged || app.range.to !== msg.session.headSha) {
         await setRange({ from: msg.session.baseSha, to: msg.session.headSha, label: 'All changes' });
       }
-      if (headChanged) toast('New commits on the branch. Diff reloaded.');
+      if (headChanged) toast(msg.session.worktree ? 'Working tree changed. Diff reloaded.' : 'New commits on the branch. Diff reloaded.');
       break;
     }
     case 'doc':

@@ -5,6 +5,7 @@
   "type": "module",
   "bin": { "review-helper": "./bin/review-helper.js" },
   "scripts": {
+    "test": "node --import tsx --test src/gateway/worktree.test.ts",
     "dev:web": "vite",
     "dev:gateway": "tsx watch src/gateway/main.ts",
     "build": "vite build",

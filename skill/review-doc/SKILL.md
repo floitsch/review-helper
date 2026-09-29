@@ -1,6 +1,6 @@
 ---
 name: review-doc
-description: Write a review document for a pull request or branch and serve as the chat agent of the Review Helper viewer. Use when asked to prepare a PR for review, to write a review doc, or to connect to review-helper.
+description: Write a prose-first review document for a pull request or branch, with code diffs as evidence, and answer questions in the Review Helper viewer when requested. Use when asked to prepare a PR for review, write a review doc, or connect to review-helper.
 ---
 
 # Review document writer and chat agent
@@ -8,31 +8,41 @@ description: Write a review document for a pull request or branch and serve as t
 You prepare a change for a human reviewer. Two jobs:
 
 1. Write `.review/doc.md` in the repository. The Review Helper viewer renders it, interleaved with the actual diffs.
-2. Stay connected and answer the reviewer's chat questions until you are told to stop.
+2. Answer follow-up questions in the reviewer's chosen channel. If they use the viewer's chat, stay connected there until they ask you to stop.
 
-The reviewer already knows the codebase roughly. They do not know this change. Your document must let them understand every hunk without scrolling around in the sources.
+The reviewer may know the codebase but does not know why this change exists. They should be able to understand and assess the change by reading the prose, opening code only to verify a claim or investigate a concern. Provide enough context that they do not have to hunt through callers or type definitions to follow the explanation.
+
+## Reading experience
+
+Lead with the behavior or problem that motivates the change. Establish what normally happens, why the existing behavior matters, what goes wrong in the relevant case, and why the proposed approach helps. Then explain the decisions and their consequences in a connected order. Follow the flow of a request, value, or failure when useful, but choose the order that best explains *why* each step exists; do not turn the document into a fictional story or a tour of files in diff order.
+
+Write the main explanation in plain language. Introduce a technical term when the reader needs it, then use the term consistently. Name a class or function when its identity matters to a claim, rather than repeatedly translating code into prose. For each substantive code change, still identify the class or component, its purpose, and why the change belongs there. Put that detail beside its evidence or in an expandable `:::explain` box when it would interrupt the main explanation.
+
+Treat diffs as evidence for the text. The reviewer should not need to read a patch to discover the motivation or infer the control flow. Use `:::diff` for every hunk, but keep lengthy line-by-line notes, code paths, and mechanical edits secondary to the explanation. Give more context when the reader would otherwise need to search for it; avoid exhaustive descriptions of obvious lines. Scale all of this down for a genuinely simple change.
+
+When the change edits a patch file, explain the effect on the underlying source. If practical, apply the before and after patch series to the same upstream revision and show or link the resulting source change. A patch-to-a-patch diff remains useful as proof, but it should not be the only way to see what the code actually becomes. Verify that reconstruction before describing it as the effective source change; if it cannot be reconstructed, state the limit.
 
 ## Setup
 
-1. The reviewer starts the gateway themselves: `review-helper --pr <N>` (or `--base <ref>`) inside the repository. It listens on `http://localhost:7777` and serves an MCP endpoint at `http://localhost:7777/mcp`.
+1. Start the gateway inside the repository with `review-helper --pr <N>`, `--base <ref>`, or `--worktree` for uncommitted changes without a PR. It listens on `http://localhost:7777` and serves an MCP endpoint at `http://localhost:7777/mcp`.
 2. Connect to that MCP server. With Claude Code, the reviewer runs once:
    ```
    claude mcp add --transport http review-helper http://localhost:7777/mcp
    ```
    Other agents: add a streamable-HTTP MCP server with that URL. If the tools `get_session`, `list_hunks`, `check_doc`, `wait_for_message`, `reply` and `get_review_state` are not available, ask the reviewer to connect you and stop.
-3. Call `get_session`. It tells you the repository, base and head revisions, the commits, the pull request (with its description) and the path of the document to write.
+3. Call `get_session`. It tells you the repository, base and head revisions, the content repository, the commits, the pull request (with its description) and the path of the document to write. In working-tree mode, base/head are immutable tree snapshots, not commits. Run `git show <head>:<path>` in the content repository to read the exact reviewed version, including files in initialized submodules. Use the snapshot head in the document front matter.
 
 ## Workflow
 
 1. `get_session`, then read the PR description and the commit messages.
 2. `list_hunks`: every hunk with its line ranges in the new file. Those ranges are what you reference in the document.
-3. Read the code. For every hunk look at the whole function/class it lives in (`git show <head>:<path>`), and at callers if the purpose is not obvious. You have the checkout on disk; use it.
-4. Write `.review/doc.md` (format below). The viewer reloads it live, so write it in one go but feel free to fix it afterwards.
+3. Read the code behind every hunk and enough surrounding behavior to explain its role. Trace the relevant callers and fallback or error paths, and compare the old and new behavior. Use `git show <head>:<path>` in the content repository to read the exact reviewed version.
+4. Decide the reading order from the change's motivation and causal flow. Write `.review/doc.md` (format below). The viewer reloads it live, so write it in one go but feel free to fix it afterwards.
 5. `check_doc`. Fix every warning (diff blocks that match no hunk, stray `:::`) and cover every uncovered hunk. Repeat until it reports no warnings and no uncovered hunks.
-6. Tell the reviewer in one line that the document is ready, then enter the chat loop:
+6. Tell the reviewer in one line that the document is ready. If they want to use the viewer's chat, enter the chat loop:
    - call `wait_for_message` (it returns after up to 55 s; if it returns no message, call it again immediately, forever)
    - answer with `reply`
-   - never stop looping unless the reviewer tells you to, or you are asked to do something else.
+   - stop listening when the reviewer asks to communicate elsewhere or you are asked to do something else; do not restart the loop without a new request.
 
 If the reviewer pushes new commits later (you will notice through `get_session` or because they tell you), update the document: set `head:` in the front matter to the new head, add a short section at the top "Changes since <old head>" describing what changed in the revision, and fix any line ranges that moved. Then `check_doc` again.
 
@@ -46,63 +56,61 @@ head: <full sha of the head you wrote this for>
 ---
 # <Title: one line saying what the PR does>
 
-<Two to five sentences: what the change achieves and why. Mention anything the reviewer should keep in mind (risk, compatibility, follow-ups).>
+<A short explanation of the problem, normal behavior, and intended outcome. Mention material risks or limits.>
 
 :::context
-<Where are we? Which subsystem, why does it exist, how does data flow through it. The reviewer can attach this to the chat.>
+<The background the reader needs to understand why the change matters. The reviewer can attach this to chat.>
 :::
 
-## <Group of related changes>
+## <A question or phase in the causal flow>
 
-::::change{#short-id title="What this change does"}
-<Purpose of this logical change: what are we doing and why. One paragraph.>
+:::::change{#short-id title="What this change does"}
+<Explain the decision and its effect in reader-facing terms. Include enough context to stand without the diff.>
+
+::::explain[Code context and evidence]
+<Name the class/component, its purpose, and why this change belongs here.>
 
 :::diff{file="src/foo.toit" lines="120-140"}
-<Optional prose about this particular hunk.>
-- L123: `buffer_` is the receive buffer allocated in the constructor (see `src/foo.toit:40`); `size` counts bytes, not characters.
-- L130-132: the early return keeps the connection open, matching `handle_` above.
+<Optional details needed to verify this hunk, including references to relevant definitions.>
 :::
+::::
 
 :::diff{file="src/bar.toit"}
+<Additional evidence, if it reads better alongside the main text.>
 :::
 
 :::concern
-<Something that looks wrong or questionable. The reviewer can turn it into a review comment with one click.>
+<A specific concern, if one remains after checking the surrounding behavior.>
 :::
-::::
+:::::
 ```
 
 ### Directives
 
-- `::::change{#id title="..."}` … `::::` wraps one logical change. Also `::::change[Title]`. Everything a reviewer needs for that change goes inside: purpose, diff blocks, concerns. It gets a "reviewed" checkbox.
+- `::::change{#id title="..."}` … `::::` wraps one logical change. Also `::::change[Title]`. Use five colons for `change` when it wraps a four-colon `explain`. Everything a reviewer needs for that change goes inside: purpose, diff blocks, concerns. It gets a "reviewed" checkbox.
 - `:::diff{file="path" lines="A-B"}` … `:::` shows the hunks of `path` that touch new-file lines A to B (inclusive) and focuses on those lines. Omit `lines` for all hunks of the file. Use `old=true` with `lines` to address lines of the old file (deleted code). Optional attributes: `view="split"` or `"unified"` if one is clearly better for this hunk (e.g. split for a reformatted block), `ws="ignore"` to hide whitespace-only changes, `open=true` to show the line-by-line part expanded, `title="..."`.
   The body of a diff block is the line-by-line explanation. It is collapsed by default and also attached to the gutter of the diff. List items that start with `L<n>`, `L<a>-<b>` or `<n>:` are attached to that new-file line; `D<n>` attaches to a line of the old file. Anything else in the body is shown as prose under "Line by line".
 - `:::note`, `:::warning`, `:::concern`, `:::context`, `:::tip` … `:::` are callout boxes. Optional title: `:::warning[Title]`.
-- `:::explain[Title]` … `:::` is a collapsed box for optional detail.
+- `:::explain[Title]` … `:::` is a collapsed box for optional detail. Use more colons when nesting it between a `change` and a `diff`, as in the example.
 - Headings (`#`, `##`, `###`) group changes and get "add to chat" handles. Use them for the grouping and ordering.
 - Fenced code with `file=` and `start=` in the info string shows a snippet with line numbers and a link to the file: ```` ```toit file=src/foo.toit start=40 ````. Use it for code that is *not* part of the diff (a caller, a type definition) when the reviewer needs to see it.
 - Any `path/to/file.ext:123` in prose becomes a link that opens the file viewer at that line. Use these generously instead of pasting code.
 
 ### Nesting rule
 
-Containers nest only if the outer one uses more colons than the inner ones. `::::change` (four) around `:::diff` (three). A stray `:::` paragraph in the rendered document means the nesting is wrong; `check_doc` warns about it.
+Containers nest only if the outer one uses more colons than the inner ones. Use `::::change` around `:::diff`, or `:::::change` around `::::explain` around `:::diff`. A stray `:::` paragraph in the rendered document means the nesting is wrong; `check_doc` warns about it.
 
 ## What a good document contains
 
-Skip anything that is obvious for the change at hand, but default to all of it:
+Adapt the depth to the change. For a substantial change:
 
-1. **Split the patch into logical changes** if it is big enough. One `::::change` per logical change, not per file.
-2. **Purpose for each change**: what are we doing, why, what would break without it.
-3. **Group** related changes even when they are far apart in the files (a new field, its initialization, its use).
-4. **Order** meaningfully: follow the data or the control flow. Where does the input enter, how is it validated, where is it stored, where is it consumed. Put groundwork (new helpers, renames) before the code that uses it, unless the use is what makes the helper understandable.
-5. **Cover every hunk.** Every hunk of `list_hunks` must appear in some `:::diff` block. Mechanical changes (renames, moves, formatting) still get a block, just a short one: "All hunks in `src/x.toit` rename `foo` to `bar`, nothing else." Grouped, one block with no `lines` is fine. `check_doc` tells you what is missing.
-6. **Context**: where are we (file, class, function), why does that code exist, what is its contract. Put it in `:::context` (at the top for the whole change, or inside a change for a specific spot). The viewer lets the reviewer attach it to the chat.
-7. **Per-hunk description** consistent with the description of the change it belongs to.
-8. **Line by line** inside the diff block body: explain every variable, constant, and callee that appears in the hunk but is defined elsewhere ("`timeout_` is the socket timeout in ms, set in the constructor from the `--timeout` flag"). Point to definitions with `path:line`. The reviewer should never have to scroll up in the file to understand a line.
-9. **Concerns**: if something looks wrong, incomplete, untested, or inconsistent with the PR description, say so in a `:::concern` inside the relevant change. Be concrete. Do not pad with generic advice.
-10. Note moved code explicitly ("moved unchanged from `a.toit:10-40`") so the reviewer can skip it. The viewer detects moves and dims them, but confirm that nothing changed in the move if that is the case.
+1. **A reason to care before the implementation.** Explain the normal behavior, the trigger for this change, and the consequence of leaving it as it was. Show why the proposed behavior is possible and where its boundary lies.
+2. **One connected reading flow.** Group related edits across files into logical changes. Put the core behavior and the decision that motivates it before incidental cleanup or patch bookkeeping, unless the groundwork is needed to understand that behavior. Use headings and prose to carry the explanation, not a file-by-file inventory.
+3. **Context at the point of need.** Explain each affected component's job and why responsibility belongs there. Introduce names, variables, and callers only when they help establish a decision or verify it. Give file references or code details in `:::context`, `:::explain`, or `:::diff` so the reviewer can inspect them without searching.
+4. **The actual effective change.** Compare old and new behavior. For edits to embedded patches, show the underlying source change when it can be reconstructed, and keep the patch-file diff as supporting evidence. Identify moved or mechanical changes so the reader can skip them confidently.
+5. **Complete evidence and specific concerns.** Reference every hunk with `:::diff`; group purely mechanical hunks when useful. Use `:::concern` for a concrete risk, missing test, or unresolved mismatch after checking context. Describe what validation was done and what remains untested without implying that a passing ordinary test exercised a rare failure path.
 
-Keep prose tight. The document is read next to the code, not instead of it.
+For a simple change, a short explanation and the relevant diff blocks may be enough. Do not make the reviewer read a long template or repeated class introductions to understand a small edit.
 
 ## Chat
 

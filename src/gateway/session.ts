@@ -24,12 +24,14 @@ import { findHunk, hunkToText, parseDiff } from './diff.ts';
 import { highlightBlob, langForPath, splitLines } from './highlight.ts';
 import { findBlock, markdownToBlocks, parseReviewDoc } from './doc.ts';
 import * as github from './github.ts';
+import { WorktreeSnapshots } from './worktree.ts';
 
 export interface SessionOptions {
   repo: string;
   base?: string;
   head?: string;
   pr?: number;
+  worktree?: boolean;
   port: number;
 }
 
@@ -51,6 +53,12 @@ export class Session {
   private docReloadTimer: NodeJS.Timeout | null = null;
   private baseRef: string;
   private headRef: string;
+  private snapshots?: WorktreeSnapshots;
+  private refreshing?: Promise<void>;
+
+  get contentRepo(): string {
+    return this.snapshots?.directory ?? this.repo;
+  }
 
   readonly reviewDir: string;
   readonly docPath: string;
@@ -75,6 +83,9 @@ export class Session {
   }
 
   private async init() {
+    if (this.opts.worktree && (this.opts.pr !== undefined || this.opts.head !== undefined)) {
+      throw new Error('--worktree cannot be combined with --pr or --head');
+    }
     mkdirSync(this.reviewDir, { recursive: true });
     const gitignore = path.join(this.reviewDir, '.gitignore');
     if (!existsSync(gitignore)) writeFileSync(gitignore, '*\n');
@@ -86,6 +97,10 @@ export class Session {
       repoName = pr.repo;
       if (!this.opts.base) this.baseRef = await this.resolveRemoteRef(pr.baseRefName);
       if (!this.opts.head) this.headRef = await this.resolveHeadRef(pr.headRefName);
+    } else if (this.opts.worktree) {
+      this.baseRef = this.opts.base ?? 'HEAD';
+      this.headRef = 'working tree';
+      this.snapshots = await WorktreeSnapshots.create(this.repo, this.reviewDir);
     } else {
       try {
         repoName = await github.repoNameWithOwner(this.repo);
@@ -138,9 +153,11 @@ export class Session {
   }
 
   private async computeRefs(pr: SessionInfo['pr'], repoName: string) {
-    const headSha = await git.revParse(this.repo, this.headRef);
-    const baseSha = await git.mergeBase(this.repo, this.baseRef, headSha);
-    const commits = await git.commitsBetween(this.repo, baseSha, headSha);
+    const refs = this.snapshots ? await this.snapshots.capture(this.baseRef) : undefined;
+    const headSha = refs?.headSha ?? await git.revParse(this.repo, this.headRef);
+    const baseSha = refs?.baseSha ?? await git.mergeBase(this.repo, this.baseRef, headSha);
+    if (refs && this.info?.baseSha === baseSha && this.info?.headSha === headSha) return;
+    const commits = this.snapshots ? [] : await git.commitsBetween(this.repo, baseSha, headSha);
     this.info = {
       repo: this.repo,
       repoName,
@@ -152,21 +169,35 @@ export class Session {
       pr,
       docPath: this.docPath,
       port: this.opts.port,
+      worktree: this.opts.worktree,
+      contentRepo: this.contentRepo,
     };
     this.diffCache.clear();
     this.fullDiff = await this.getDiff(baseSha, headSha);
   }
 
   private async pollHead() {
+    if (this.snapshots) {
+      await this.refresh();
+      return;
+    }
     const sha = await git.revParse(this.repo, this.headRef);
     if (sha !== this.info.headSha) await this.refresh();
   }
 
-  async refresh() {
-    await this.computeRefs(this.info.pr, this.info.repoName);
-    this.broadcast({ type: 'session', session: this.info });
-    await this.reloadDoc();
-    if (this.info.pr) this.loadConversation().catch((e) => console.error(e));
+  refresh(): Promise<void> {
+    if (!this.refreshing) {
+      this.refreshing = (async () => {
+        const previous = this.info;
+        await this.computeRefs(previous.pr, previous.repoName);
+        if (this.info.baseSha !== previous.baseSha || this.info.headSha !== previous.headSha) {
+          this.broadcast({ type: 'session', session: this.info });
+        }
+        await this.reloadDoc();
+        if (this.info.pr) this.loadConversation().catch((e) => console.error(e));
+      })().finally(() => { this.refreshing = undefined; });
+    }
+    return this.refreshing;
   }
 
   // ---- diffs & files ----
@@ -176,7 +207,7 @@ export class Session {
     let p = this.diffCache.get(key);
     if (!p) {
       p = (async () => {
-        const raw = await git.rawDiff(this.repo, from, to);
+        const raw = await git.rawDiff(this.contentRepo, from, to);
         const set = parseDiff(raw, from, to);
         await this.decorateDiff(set);
         return set;
@@ -216,12 +247,12 @@ export class Session {
     let promise = this.fileCache.get(key);
     if (!promise) {
       promise = (async () => {
-        const buf = await git.showFile(this.repo, rev, p);
+        const buf = await git.showFile(this.contentRepo, rev, p);
         if (buf === null) return null;
         const lang = langForPath(p);
         if (git.isBinary(buf)) return { path: p, rev, lang, lines: [], binary: true };
         const code = buf.toString('utf8');
-        const sha = (await git.blobSha(this.repo, rev, p)) ?? `${rev}:${p}`;
+        const sha = (await git.blobSha(this.contentRepo, rev, p)) ?? `${rev}:${p}`;
         const lines = await highlightBlob(sha, code, lang);
         return { path: p, rev, lang, lines };
       })();
@@ -254,7 +285,7 @@ export class Session {
   }
 
   async rawFileText(p: string, rev: string): Promise<string | null> {
-    const buf = await git.showFile(this.repo, rev, p);
+    const buf = await git.showFile(this.contentRepo, rev, p);
     if (buf === null || git.isBinary(buf)) return null;
     return buf.toString('utf8');
   }
@@ -481,7 +512,7 @@ export class Session {
           break;
         }
         case 'file':
-          parts.push(`### File ${c.file} (revision ${this.describeRev(c.rev)})\nRead it from the repository at ${this.repo}: \`git show ${c.rev}:${c.file}\``);
+          parts.push(`### File ${c.file} (revision ${this.describeRev(c.rev)})\nRead it from the repository at ${this.contentRepo}: \`git show ${c.rev}:${c.file}\``);
           break;
         case 'comment':
           parts.push(`### Comment${c.file ? ` on ${c.file}${c.line ? `:${c.line}` : ''}` : ''}\n${c.text}`);
@@ -492,8 +523,8 @@ export class Session {
   }
 
   describeRev(rev: string): string {
-    if (rev === this.info.headSha) return `${rev.slice(0, 10)} = head of the PR`;
-    if (rev === this.info.baseSha) return `${rev.slice(0, 10)} = base of the PR`;
+    if (rev === this.info.headSha) return `${rev.slice(0, 10)} = ${this.info.head}`;
+    if (rev === this.info.baseSha) return `${rev.slice(0, 10)} = ${this.info.base}`;
     return rev;
   }
 
